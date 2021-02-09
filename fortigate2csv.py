@@ -16,19 +16,24 @@ from requests.packages.urllib3.exceptions import InsecureRequestWarning
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
 # items
-item_types = ['interface', 'policy', 'snat', 'address', 'service', 'dnat', 'pool']
+item_types = ['interface', 'policy', 'snat', 'address', 'service', 'dnat', 'pool', 'users', 'fortitoken', 'groups']
 
 def main():
     # build a parser, set arguments, parse the input
     parser = argparse.ArgumentParser()
     parser.add_argument('-f', '--firewall', help='Firewall Host', required=True)
+    parser.add_argument('-p', '--port', help='Firewall Port', required=False)
     parser.add_argument('-u', '--user', help='Username', required=True)
     parser.add_argument('-v', '--vdom', help='VDOM', required=True)
     parser.add_argument('-i', '--item', help='Item', required=True)
     parser.add_argument('-o', '--outfile', help='Output CSV file', required=False)
     args = parser.parse_args()
 
-    base_url = f'https://{args.firewall}/'
+    # if port not defined, defaults to 443
+    if args.port is None:
+        args.port = 443
+    
+    base_url = f'https://{args.firewall}:{args.port}/'
 
     # check item type
     if args.item not in item_types:
@@ -40,7 +45,7 @@ def main():
 
     # connect and authenticate
     print(f'Connecting to {args.firewall} ({args.vdom}) as {args.user}')
-    f = f_login(args.firewall, args.user, password, args.vdom)
+    f = f_login(args.firewall, args.user, password, args.vdom, args.port)
     print('Fetching data...')
 
     # DNAT and VIPs
@@ -87,9 +92,29 @@ def main():
             'internet-service-src-id', 'service', 'action', 'status', 'schedule', 'visibility', 
             'profile-group', 'nat', 'comments']
     
+    # users
+    elif args.item == 'users':
+        data = f.get(f'{base_url}api/v2/cmdb/user/local?vdom={args.vdom}').json()
+        headers = ['name', 'q_origin_key', 'id', 'status', 'type', 'passwd', 
+            'ldap-server', 'radius-server', 'tacacs+-server', 'two-factor', 'two-factor-authentication', 'two-factor-notification', 
+            'fortitoken', 'email-to', 'sms-server', 'sms-custom-server', 'sms-phone', 'passwd-policy', 
+            'passwd-time', 'authtimeout', 'workstation', 'auth-concurrent-override', 'auth-concurrent-value', 'ppk-secret', 
+            'ppk-identity', 'username-case-sensitivity']
+    
+    # groups
+    elif args.item == 'groups':
+        data = f.get(f'{base_url}api/v2/cmdb/user/group?vdom={args.vdom}').json()
+        headers = ['name', 'q_origin_key', 'id', 'group-type', 'member']
+    
+    # fortitoken
+    elif args.item == 'fortitoken':
+        data = f.get(f'{base_url}api/v2/cmdb/user/fortitoken?vdom={args.vdom}').json()
+        headers = ['serial-number', 'q_origin_key', 'status', 'seed', 'comments', 'license', 
+            'activation-code', 'activation-expire', 'reg-id', 'os-ver',]
+    
     # logout to prevent stale sessions
     print(f'Logging out of firewall')
-    f.get(f'https://{args.firewall}/logout', verify=False, timeout=10)
+    f.get(f'https://{args.firewall}:8443/logout', verify=False, timeout=10)
     
     # format the data
     if 'results' not in data:
@@ -159,7 +184,7 @@ def build_csv(headers, rows):
     return csv
 
 
-def f_login(host,user,password,vdom):
+def f_login(host,user,password,vdom,port):
     """ 
     Return a requests session after authenticating
 
@@ -172,7 +197,7 @@ def f_login(host,user,password,vdom):
     """
     # send the initial authentication request
     session = requests.session()
-    p = session.post(f'https://{host}/logincheck',
+    p = session.post(f'https://{host}:{port}/logincheck',
         data=f'username={user}&secretkey={password}',
         verify=False,
         timeout=10)
@@ -186,14 +211,14 @@ def f_login(host,user,password,vdom):
     # if there is a login banner, we need to 'accept' it
     if 'logindisclaimer' in p.text:
         print('Accepting login banner')
-        session.post(f'https://{host}/logindisclaimer',
+        session.post(f'https://{host}:{port}/logindisclaimer',
             data=f'confirm=1&redir=/ng',
             verify=False,
             timeout=10)
 
     # check login was successful
     try:
-        login = session.get(f'https://{host}/api/v2/cmdb/system/vdom')
+        login = session.get(f'https://{host}:{port}/api/v2/cmdb/system/vdom')
         login.raise_for_status()
         print(f'Successfully logged in as {user}')
     except Exception as e: 
